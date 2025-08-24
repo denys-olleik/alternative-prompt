@@ -15,7 +15,7 @@ All options
 - --audio [text]: also generate TTS WAV via gpt-4o-mini-tts.
 
 Common combinations:
-* mini: `.\Prompt.exe -m
+* mini: `.\Prompt.exe -m`
 * reasoning: `.\Prompt.exe -r -v high -e minimal`
 * with audio: `.\Prompt.exe -r -v high -e minimal --audio`
 
