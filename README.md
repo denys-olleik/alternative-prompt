@@ -15,8 +15,8 @@ All options
 - --audio [text]: also generate TTS WAV via gpt-4o-mini-tts.
 
 Common combinations:
-mini: `.\Prompt.exe -m
-reasoning: `.\Prompt.exe -r -v high -e minimal`
-with audio: `.\Prompt.exe -r -v high -e minimal --audio`
+* mini: `.\Prompt.exe -m
+* reasoning: `.\Prompt.exe -r -v high -e minimal`
+* with audio: `.\Prompt.exe -r -v high -e minimal --audio`
 
 NOTE: GPT5 removes temperature and adds verbosity and reasoning flags.
