@@ -2,15 +2,42 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 
 class Program
 {
-  // Models
-  private const string DefaultModel = "gpt-4.1-2025-04-14";       // default non-reasoning model
-  private const string MiniModel = "gpt-4.1-mini-2025-04-14";    // mini non-reasoning model
-  private const string ReasoningModel = "gpt-5-2025-08-07";      // reasoning model
-  private const string TtsModel = "gpt-4o-mini-tts";             // text-to-speech model
+  // Constants (preserve names and values)
+  private const string DefaultModel = "gpt-4.1-2025-04-14";
+  private const string MiniModel = "gpt-4.1-mini-2025-04-14";
+  private const string ReasoningModel = "gpt-5-2025-08-07";
+  private const string TtsModel = "gpt-4o-mini-tts";
   private const string FileName = "prompt.md";
+
+  private const string AudioArchiveDirName = "audio-archive";
+  private const string CurrentAudioFile = "output.wav";
+  private const string AudioPrefix = "output";
+
+  private static readonly JsonSerializerOptions JsonOpts = new()
+  {
+    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    PropertyNamingPolicy = null
+  };
+
+  private static readonly HttpClient Http = new()
+  {
+    Timeout = TimeSpan.FromMinutes(5)
+  };
+
+  private record Options(
+    bool UseReasoning,
+    bool UseMini,
+    bool IncludeImages,
+    bool DoArchive,
+    double? Temperature,
+    string? Verbosity,
+    string? ReasoningEffort,
+    string? AudioInstruction
+  );
 
   static async Task Main(string[] args)
   {
@@ -22,219 +49,92 @@ class Program
         Console.WriteLine("Need API key");
         Environment.Exit(1);
       }
+      Http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
 
-      // Flags/options
-      bool useReasoning = false;       // -r
-      bool useMini = false;            // -m
-      bool includeImages = false;      // --images
-      double? temperature = null;      // -t
-      string? verbosity = null;        // -v
-      string? reasoningEffort = null;  // -e
-      string? audioInstruction = null; // --audio [string]
-
-      // Parse args
-      for (int i = 0; i < args.Length; i++)
-      {
-        string raw = args[i];
-        string arg = raw.ToLowerInvariant();
-
-        switch (arg)
-        {
-          case "-r": useReasoning = true; break;
-          case "-m": useMini = true; break;
-          case "--images":
-            includeImages = true;
-            break;
-          case "-t":
-            if (i + 1 >= args.Length) throw new ArgumentException("Missing value for -t.");
-            if (!double.TryParse(args[++i], out var t))
-              throw new ArgumentException("Invalid temperature value after -t.");
-            temperature = t;
-            break;
-          case "-v":
-            if (i + 1 >= args.Length) throw new ArgumentException("Missing value for -v.");
-            var v = args[++i].ToLowerInvariant();
-            if (v != "low" && v != "medium" && v != "high")
-              throw new ArgumentException("Invalid -v; allowed: low | medium | high.");
-            verbosity = v;
-            break;
-          case "-e":
-            if (i + 1 >= args.Length) throw new ArgumentException("Missing value for -e.");
-            var e = args[++i].ToLowerInvariant();
-            var allowedE = new HashSet<string> { "minimal", "low", "medium", "high" };
-            if (!allowedE.Contains(e))
-              throw new ArgumentException("Invalid -e; allowed: minimal | low | medium | high.");
-            reasoningEffort = e;
-            break;
-          case "--audio":
-            if (audioInstruction != null) throw new ArgumentException("Duplicate --audio.");
-            if (i + 1 < args.Length && !args[i + 1].StartsWith("-"))
-              audioInstruction = args[++i];
-            else
-              audioInstruction = ""; // request audio but no extra string
-            break;
-          default:
-            throw new ArgumentException($"Unknown argument: {raw}");
-        }
-      }
+      var opts = ParseArgs(args);
 
       // Resolve model
       string model;
       bool isReasoningModel;
-      if (useReasoning)
+      if (opts.UseReasoning)
       {
         model = ReasoningModel;
         isReasoningModel = true;
-        if (useMini) Console.WriteLine("Note: -r takes precedence; -m ignored.");
+        if (opts.UseMini) Console.WriteLine("Note: -r takes precedence; -m ignored.");
       }
-      else if (useMini) { model = MiniModel; isReasoningModel = false; }
-      else { model = DefaultModel; isReasoningModel = false; }
+      else if (opts.UseMini)
+      {
+        model = MiniModel;
+        isReasoningModel = false;
+      }
+      else
+      {
+        model = DefaultModel;
+        isReasoningModel = false;
+      }
 
       // Read prompt
       string prompt = await File.ReadAllTextAsync(FileName);
 
-      // Load PNG images if requested
-      var imagesDir = Path.Combine(Directory.GetCurrentDirectory(), "images");
-      var imageArchiveDir = Path.Combine(Directory.GetCurrentDirectory(), "image-archive");
-      List<(string filePath, string dataUrl)> pngImages = new();
+      // Prepare dirs
+      var cwd = Directory.GetCurrentDirectory();
+      var imagesDir = Path.Combine(cwd, "images");
+      var imageArchiveDir = Path.Combine(cwd, "image-archive");
+      var archiveDir = Path.Combine(cwd, "archive");
+      Directory.CreateDirectory(archiveDir);
 
-      if (includeImages)
-      {
-        if (!Directory.Exists(imagesDir))
-        {
-          Console.WriteLine("Note: --images specified but ./images folder not found; continuing without images.");
-        }
-        else
-        {
-          foreach (var file in Directory.EnumerateFiles(imagesDir))
-          {
-            var ext = Path.GetExtension(file).ToLowerInvariant();
-            if (ext == ".png")
-            {
-              byte[] bytes;
-              try
-              {
-                bytes = await File.ReadAllBytesAsync(file);
-              }
-              catch (Exception ex)
-              {
-                Console.WriteLine($"Warning: could not read {file}: {ex.Message}");
-                continue;
-              }
-              string b64 = Convert.ToBase64String(bytes);
-              string dataUrl = $"data:image/png;base64,{b64}";
-              pngImages.Add((file, dataUrl));
-            }
-          }
+      // Load images (optional)
+      var pngImages = opts.IncludeImages
+        ? await LoadPngDataUrlsAsync(imagesDir)
+        : new List<(string filePath, string dataUrl)>();
 
-          if (pngImages.Count == 0)
-          {
-            Console.WriteLine("Note: --images specified but no PNG files found in ./images; continuing without images.");
-          }
-        }
-      }
+      // Build request
+      var requestDict = BuildChatRequest(model, prompt, pngImages, isReasoningModel, opts);
 
-      // Build chat request
-      var requestDict = new Dictionary<string, object?>();
-      requestDict["model"] = model;
-
-      // Build message content with optional images
-      // For OpenAI Chat Completions with image input, content can be an array of parts:
-      // - { type: "text", text: "..." }
-      // - { type: "image_url", image_url: { url: "data:image/png;base64,..." } }
-      var contentParts = new List<Dictionary<string, object?>>();
-      contentParts.Add(new Dictionary<string, object?> {
-        { "type", "text" },
-        { "text", prompt }
-      });
-
-      if (pngImages.Count > 0)
-      {
-        foreach (var (_, dataUrl) in pngImages)
-        {
-          contentParts.Add(new Dictionary<string, object?> {
-            { "type", "image_url" },
-            { "image_url", new Dictionary<string, object?> {
-                { "url", dataUrl }
-              }
-            }
-          });
-        }
-      }
-
-      requestDict["messages"] = new object[]
-      {
-        new Dictionary<string, object?> {
-          { "role", "user" },
-          { "content", contentParts }
-        }
-      };
-
-      if (isReasoningModel)
-      {
-        if (temperature.HasValue) Console.WriteLine("Note: -t ignored for gpt-5.");
-        if (!string.IsNullOrWhiteSpace(verbosity)) requestDict["verbosity"] = verbosity;
-        if (!string.IsNullOrWhiteSpace(reasoningEffort)) requestDict["reasoning_effort"] = reasoningEffort;
-      }
-      else
-      {
-        requestDict["temperature"] = temperature ?? 0.1;
-      }
-
-      // Send chat request
-      var (responseText, usage, statusCode, rawResponse) = await PostChatAsync(apiKey, requestDict);
+      // Send request
+      var (responseText, usage, statusCode, rawResponse) = await PostChatAsync(requestDict);
 
       Console.WriteLine("=== CHAT RESPONSE ===");
       Console.WriteLine($"Status: {(int)statusCode} ({statusCode})");
 
       if ((int)statusCode >= 200 && (int)statusCode < 300)
       {
-        using var writer = File.AppendText(FileName);
-        await writer.WriteLineAsync();
-        await writer.WriteLineAsync("---");
-        await writer.WriteLineAsync((responseText ?? "").Trim());
-        await writer.WriteLineAsync($"`{model}`,`{{tokens: {usage.total}/{usage.prompt}/{usage.completion}}}`");
-        await writer.WriteLineAsync("---");
-        Console.WriteLine("Response appended to prompt.md.");
+        // Append response and possibly archive
+        var lastAppendedBlock = await AppendResponseBlockAsync(FileName, responseText, model, usage);
 
-        // If images were included and call succeeded, archive them
         if (pngImages.Count > 0)
         {
-          Directory.CreateDirectory(imageArchiveDir);
-          foreach (var (filePath, _) in pngImages)
-          {
-            try
-            {
-              var destPath = Path.Combine(imageArchiveDir, Path.GetFileName(filePath));
-              // If a file with the same name exists, append a timestamp to avoid collision
-              if (File.Exists(destPath))
-              {
-                var name = Path.GetFileNameWithoutExtension(filePath);
-                var ext = Path.GetExtension(filePath);
-                var stamped = $"{name}-{DateTime.UtcNow:yyyyMMddHHmmssfff}{ext}";
-                destPath = Path.Combine(imageArchiveDir, stamped);
-              }
-              File.Move(filePath, destPath);
-            }
-            catch (Exception ex)
-            {
-              Console.WriteLine($"Warning: failed to archive {filePath}: {ex.Message}");
-            }
-          }
+          await ArchiveImagesAsync(pngImages, imageArchiveDir);
           Console.WriteLine("Images moved to image-archive.");
         }
-      }
 
-      // If audio requested, send TTS request
-      if (audioInstruction != null && !string.IsNullOrWhiteSpace(responseText))
-      {
-        var audioBytes = await PostTtsAsync(apiKey, responseText, "alloy");
-        if (audioBytes != null)
+        if (opts.DoArchive)
         {
-          string audioFile = "output.wav";
-          await File.WriteAllBytesAsync(audioFile, audioBytes);
-          Console.WriteLine($"Audio written to {audioFile}");
+          await ArchiveConversationAsync(FileName, archiveDir, "prompt", lastAppendedBlock);
         }
+
+        // Audio handling
+        if (opts.AudioInstruction != null && !string.IsNullOrWhiteSpace(responseText))
+        {
+          try { await PrepareAudioArchiveOfCurrentAsync(); }
+          catch (Exception ex) { Console.WriteLine($"Warning: audio pre-archive failed: {ex.Message}. Continuing to generate new audio."); }
+
+          // Behavior unchanged: audioInstruction is parsed but not used in TTS request
+          var audioBytes = await PostTtsAsync(responseText, "alloy");
+          if (audioBytes != null)
+          {
+            await File.WriteAllBytesAsync(CurrentAudioFile, audioBytes);
+            Console.WriteLine($"Audio written to {CurrentAudioFile}");
+          }
+          else
+          {
+            Console.WriteLine("Warning: TTS request failed; no audio generated.");
+          }
+        }
+      }
+      else
+      {
+        Console.WriteLine("Request failed; not appending or archiving.");
       }
     }
     catch (Exception ex)
@@ -244,21 +144,155 @@ class Program
     }
   }
 
-  private static async Task<(string response, (int total, int prompt, int completion) usage, System.Net.HttpStatusCode statusCode, string raw)>
-    PostChatAsync(string apiKey, Dictionary<string, object?> requestDict)
+  private static Options ParseArgs(string[] args)
   {
-    string requestBody = JsonSerializer.Serialize(requestDict, new JsonSerializerOptions
+    bool useReasoning = false;
+    bool useMini = false;
+    bool includeImages = false;
+    bool doArchive = false;
+    double? temperature = null;
+    string? verbosity = null;
+    string? reasoningEffort = null;
+    string? audioInstruction = null;
+
+    for (int i = 0; i < args.Length; i++)
     {
-      DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-      PropertyNamingPolicy = null
-    });
+      string raw = args[i];
+      string arg = raw.ToLowerInvariant();
 
-    using var client = new HttpClient();
-    client.Timeout = TimeSpan.FromMinutes(5);
-    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+      switch (arg)
+      {
+        case "-r": useReasoning = true; break;
+        case "-m": useMini = true; break;
+        case "--images": includeImages = true; break;
+        case "--archive": doArchive = true; break;
+        case "-t":
+          if (i + 1 >= args.Length) throw new ArgumentException("Missing value for -t.");
+          if (!double.TryParse(args[++i], out var t)) throw new ArgumentException("Invalid temperature value after -t.");
+          temperature = t;
+          break;
+        case "-v":
+          if (i + 1 >= args.Length) throw new ArgumentException("Missing value for -v.");
+          var v = args[++i].ToLowerInvariant();
+          if (v != "low" && v != "medium" && v != "high")
+            throw new ArgumentException("Invalid -v; allowed: low | medium | high.");
+          verbosity = v;
+          break;
+        case "-e":
+          if (i + 1 >= args.Length) throw new ArgumentException("Missing value for -e.");
+          var e = args[++i].ToLowerInvariant();
+          var allowedE = new HashSet<string> { "minimal", "low", "medium", "high" };
+          if (!allowedE.Contains(e))
+            throw new ArgumentException("Invalid -e; allowed: minimal | low | medium | high.");
+          reasoningEffort = e;
+          break;
+        case "--audio":
+          if (audioInstruction != null) throw new ArgumentException("Duplicate --audio.");
+          if (i + 1 < args.Length && !args[i + 1].StartsWith("-"))
+            audioInstruction = args[++i];
+          else
+            audioInstruction = "";
+          break;
+        default:
+          throw new ArgumentException($"Unknown argument: {raw}");
+      }
+    }
 
+    return new Options(useReasoning, useMini, includeImages, doArchive, temperature, verbosity, reasoningEffort, audioInstruction);
+  }
+
+  private static async Task<List<(string filePath, string dataUrl)>> LoadPngDataUrlsAsync(string imagesDir)
+  {
+    var results = new List<(string filePath, string dataUrl)>();
+    if (!Directory.Exists(imagesDir))
+    {
+      Console.WriteLine("Note: --images specified but ./images folder not found; continuing without images.");
+      return results;
+    }
+
+    foreach (var file in Directory.EnumerateFiles(imagesDir))
+    {
+      var ext = Path.GetExtension(file).ToLowerInvariant();
+      if (ext != ".png") continue;
+
+      try
+      {
+        var bytes = await File.ReadAllBytesAsync(file);
+        string dataUrl = $"data:image/png;base64,{Convert.ToBase64String(bytes)}";
+        results.Add((file, dataUrl));
+      }
+      catch (Exception ex)
+      {
+        Console.WriteLine($"Warning: could not read {file}: {ex.Message}");
+      }
+    }
+
+    if (results.Count == 0)
+      Console.WriteLine("Note: --images specified but no PNG files found in ./images; continuing without images.");
+
+    return results;
+  }
+
+  private static Dictionary<string, object?> BuildChatRequest(
+    string model,
+    string prompt,
+    List<(string filePath, string dataUrl)> pngImages,
+    bool isReasoningModel,
+    Options opts)
+  {
+    var contentParts = new List<Dictionary<string, object?>>()
+    {
+      new() { { "type", "text" }, { "text", prompt } }
+    };
+
+    if (pngImages.Count > 0)
+    {
+      foreach (var (_, dataUrl) in pngImages)
+      {
+        contentParts.Add(new Dictionary<string, object?>
+        {
+          { "type", "image_url" },
+          { "image_url", new Dictionary<string, object?> { { "url", dataUrl } } }
+        });
+      }
+    }
+
+    var requestDict = new Dictionary<string, object?>
+    {
+      { "model", model },
+      {
+        "messages",
+        new object[]
+        {
+          new Dictionary<string, object?>
+          {
+            { "role", "user" },
+            { "content", contentParts }
+          }
+        }
+      }
+    };
+
+    if (isReasoningModel)
+    {
+      if (opts.Temperature.HasValue) Console.WriteLine("Note: -t ignored for gpt-5.");
+      if (!string.IsNullOrWhiteSpace(opts.Verbosity)) requestDict["verbosity"] = opts.Verbosity;
+      if (!string.IsNullOrWhiteSpace(opts.ReasoningEffort)) requestDict["reasoning_effort"] = opts.ReasoningEffort;
+    }
+    else
+    {
+      requestDict["temperature"] = opts.Temperature ?? 0.1;
+    }
+
+    return requestDict;
+  }
+
+  private static async Task<(string response, (int total, int prompt, int completion) usage, System.Net.HttpStatusCode statusCode, string raw)>
+    PostChatAsync(Dictionary<string, object?> requestDict)
+  {
+    string requestBody = JsonSerializer.Serialize(requestDict, JsonOpts);
     var content = new StringContent(requestBody, Encoding.UTF8, "application/json");
-    var response = await client.PostAsync("https://api.openai.com/v1/chat/completions", content);
+    var response = await Http.PostAsync("https://api.openai.com/v1/chat/completions", content);
     string raw = await response.Content.ReadAsStringAsync();
 
     string choiceText = "";
@@ -284,7 +318,6 @@ class Program
             }
             else if (contentElem.ValueKind == JsonValueKind.Array)
             {
-              // If the API returns content as array of parts, concatenate any text parts.
               var sb = new StringBuilder();
               foreach (var part in contentElem.EnumerateArray())
               {
@@ -312,7 +345,154 @@ class Program
     return (choiceText, (totalTokens, promptTokens, completionTokens), response.StatusCode, raw);
   }
 
-  private static async Task<byte[]?> PostTtsAsync(string apiKey, string text, string voice)
+  private static async Task<string> AppendResponseBlockAsync(
+    string filePath, string responseText, string model, (int total, int prompt, int completion) usage)
+  {
+    var trimmed = (responseText ?? "").Trim();
+    var block = new StringBuilder()
+      .AppendLine()
+      .AppendLine("---")
+      .AppendLine(trimmed)
+      .AppendLine($"`{model}`,`{{tokens: {usage.total}/{usage.prompt}/{usage.completion}}}`")
+      .AppendLine("---")
+      .ToString();
+
+    using (var writer = File.AppendText(filePath))
+    {
+      await writer.WriteAsync(block);
+    }
+    Console.WriteLine("Response appended to prompt.md.");
+    return block;
+  }
+
+  private static async Task ArchiveImagesAsync(List<(string filePath, string dataUrl)> pngImages, string imageArchiveDir)
+  {
+    Directory.CreateDirectory(imageArchiveDir);
+    foreach (var (filePath, _) in pngImages)
+    {
+      try
+      {
+        var destPath = Path.Combine(imageArchiveDir, Path.GetFileName(filePath));
+        await MoveWithTimestampIfExistsAsync(filePath, destPath);
+      }
+      catch (Exception ex)
+      {
+        Console.WriteLine($"Warning: failed to archive {filePath}: {ex.Message}");
+      }
+    }
+  }
+
+  private static async Task ArchiveConversationAsync(string promptPath, string archiveDir, string prefix, string lastAppendedBlock)
+  {
+    try
+    {
+      // Read full file (request + just-appended response)
+      string fullAfterAppend = await File.ReadAllTextAsync(promptPath, Encoding.UTF8);
+
+      // Determine next archive name
+      int nextNumber = await GetNextArchiveNumberByNumericSuffixAsync(archiveDir, prefix);
+      string archivePath = Path.Combine(archiveDir, $"{prefix}{nextNumber}.md");
+
+      // Guard against overwrite
+      int guard = nextNumber;
+      while (File.Exists(archivePath))
+      {
+        guard++;
+        archivePath = Path.Combine(archiveDir, $"{prefix}{guard}.md");
+      }
+
+      await File.WriteAllTextAsync(archivePath, fullAfterAppend, Encoding.UTF8);
+      Console.WriteLine($"Archived to {archivePath}");
+
+      // Reset prompt.md to only the last response block
+      await File.WriteAllTextAsync(promptPath, lastAppendedBlock, Encoding.UTF8);
+      Console.WriteLine("prompt.md reset to last response block.");
+    }
+    catch (Exception ex)
+    {
+      Console.WriteLine($"Warning: archiving failed: {ex.Message}. Leaving prompt.md as-is.");
+    }
+  }
+
+  // Shared numeric suffix scanner for text archives
+  private static async Task<int> GetNextArchiveNumberByNumericSuffixAsync(string archiveDir, string prefix)
+  {
+    return await Task.Run(() =>
+    {
+      Directory.CreateDirectory(archiveDir);
+
+      var numbers = Directory.EnumerateFiles(archiveDir, $"{prefix}*.md")
+        .Select(path => Path.GetFileName(path)!)
+        .Select(name => TryParseNumericSuffix(name, prefix, out var n) ? n : (int?)null)
+        .Where(n => n.HasValue)
+        .Select(n => n!.Value)
+        .ToList();
+
+      return numbers.Count == 0 ? 1 : numbers.Max() + 1;
+    });
+  }
+
+  private static bool TryParseNumericSuffix(string fileName, string prefix, out int number)
+  {
+    number = 0;
+    if (!fileName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return false;
+    var core = Path.GetFileNameWithoutExtension(fileName);
+    if (core.Length <= prefix.Length) return false;
+    var suffix = core.Substring(prefix.Length);
+    return int.TryParse(suffix, out number);
+  }
+
+  // Audio archive mover for current wav
+  private static async Task PrepareAudioArchiveOfCurrentAsync()
+  {
+    if (!File.Exists(CurrentAudioFile)) return;
+
+    var cwd = Directory.GetCurrentDirectory();
+    var audioArchiveDir = Path.Combine(cwd, AudioArchiveDirName);
+    Directory.CreateDirectory(audioArchiveDir);
+
+    int nextN = await GetNextAudioArchiveNumberAsync(audioArchiveDir, AudioPrefix);
+    string archivedPath = Path.Combine(audioArchiveDir, $"{AudioPrefix}{nextN}.wav");
+
+    File.Move(Path.Combine(cwd, CurrentAudioFile), archivedPath);
+    Console.WriteLine($"Archived existing {CurrentAudioFile} to {archivedPath}");
+  }
+
+  private static async Task<int> GetNextAudioArchiveNumberAsync(string audioArchiveDir, string prefix)
+  {
+    return await Task.Run(() =>
+    {
+      Directory.CreateDirectory(audioArchiveDir);
+      var regex = new Regex($"^{Regex.Escape(prefix)}(\\d+)\\.wav$", RegexOptions.IgnoreCase);
+
+      var candidates = Directory.EnumerateFiles(audioArchiveDir, $"{prefix}*.wav")
+        .Select(p => Path.GetFileName(p)!)
+        .Select(name => (name, m: regex.Match(name)))
+        .Where(x => x.m.Success)
+        .Select(x => int.Parse(x.m.Groups[1].Value))
+        .ToList();
+
+      return candidates.Count == 0 ? 1 : candidates.Max() + 1;
+    });
+  }
+
+  private static async Task MoveWithTimestampIfExistsAsync(string srcPath, string destPath)
+  {
+    if (!File.Exists(destPath))
+    {
+      File.Move(srcPath, destPath);
+      return;
+    }
+
+    var dir = Path.GetDirectoryName(destPath)!;
+    var name = Path.GetFileNameWithoutExtension(destPath);
+    var ext = Path.GetExtension(destPath);
+    var stamped = Path.Combine(dir, $"{name}-{DateTime.UtcNow:yyyyMMddHHmmssfff}{ext}");
+    File.Move(srcPath, stamped);
+    await Task.CompletedTask;
+  }
+
+  private static async Task<byte[]?> PostTtsAsync(string text, string voice)
   {
     var requestDict = new Dictionary<string, object?>
     {
@@ -323,13 +503,9 @@ class Program
       { "speed_instructions", "fast" }
     };
 
-    string requestBody = JsonSerializer.Serialize(requestDict);
-
-    using var client = new HttpClient();
-    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-
+    string requestBody = JsonSerializer.Serialize(requestDict, JsonOpts);
     var content = new StringContent(requestBody, Encoding.UTF8, "application/json");
-    var response = await client.PostAsync("https://api.openai.com/v1/audio/speech", content);
+    var response = await Http.PostAsync("https://api.openai.com/v1/audio/speech", content);
 
     if (!response.IsSuccessStatusCode) return null;
     return await response.Content.ReadAsByteArrayAsync();

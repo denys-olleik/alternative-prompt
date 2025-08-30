@@ -9,7 +9,7 @@
 
   <ItemGroup>
     <None Update="prompt.md">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
     </None>
   </ItemGroup>
 
