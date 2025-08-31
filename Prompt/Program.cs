@@ -43,7 +43,7 @@ class Program
   {
     try
     {
-      string? apiKey = null;
+      string? apiKey = Environment.GetEnvironmentVariable("openai");
       if (string.IsNullOrWhiteSpace(apiKey))
       {
         Console.WriteLine("Need API key");
