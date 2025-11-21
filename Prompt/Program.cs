@@ -17,6 +17,16 @@ class Program
   private const string CurrentAudioFile = "output.wav";
   private const string AudioPrefix = "output";
 
+  // Supported models and their endpoint type
+  // true = /v1/responses, false = /v1/chat/completions
+  private static readonly Dictionary<string, bool> SupportedModels = new(StringComparer.OrdinalIgnoreCase)
+  {
+    { DefaultModel, false },
+    { MiniModel, false },
+    { ReasoningModel, true },
+    { TtsModel, false }, // TTS model is handled separately, but included for completeness
+  };
+
   private static readonly JsonSerializerOptions JsonOpts = new()
   {
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
@@ -52,8 +62,18 @@ class Program
 
       var opts = ParseArgs(args);
 
+      // === Model validation ===
+      if (!SupportedModels.ContainsKey(opts.Model))
+      {
+        Console.WriteLine("Error: model not supported.");
+        Console.WriteLine("Supported models:");
+        foreach (var model in SupportedModels.Keys)
+          Console.WriteLine($"  - {model}");
+        Environment.Exit(1);
+      }
+
       // Determine endpoint and model type
-      bool isResponsesApi = IsResponsesApiModel(opts.Model);
+      bool isResponsesApi = SupportedModels[opts.Model];
 
       // Read prompt
       if (!File.Exists(FileName))
@@ -191,14 +211,6 @@ class Program
     }
 
     return new Options(model, includeImages, doArchive, temperature, verbosity, reasoningEffort, audioInstruction);
-  }
-
-  // Determine if model uses /v1/responses endpoint
-  private static bool IsResponsesApiModel(string model)
-  {
-    // Add new models here as needed
-    return model.StartsWith("gpt-5", StringComparison.OrdinalIgnoreCase)
-      || model.Contains("codex", StringComparison.OrdinalIgnoreCase);
   }
 
   private static async Task<List<(string filePath, string dataUrl)>> LoadPngDataUrlsAsync(string imagesDir)
