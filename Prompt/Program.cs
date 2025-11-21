@@ -313,7 +313,7 @@ class Program
   {
     var contentParts = new List<Dictionary<string, object?>>()
     {
-      new() { { "type", "text" }, { "text", prompt } }
+      new() { { "type", "input_text" }, { "text", prompt } }
     };
 
     if (pngImages.Count > 0)
@@ -321,10 +321,10 @@ class Program
       foreach (var (_, dataUrl) in pngImages)
       {
         contentParts.Add(new Dictionary<string, object?>
-        {
-          { "type", "image_url" },
-          { "image_url", new Dictionary<string, object?> { { "url", dataUrl } } }
-        });
+      {
+        { "type", "image_url" },
+        { "image_url", new Dictionary<string, object?> { { "url", dataUrl } } }
+      });
       }
     }
 
@@ -344,8 +344,10 @@ class Program
       }
     };
 
-    if (!string.IsNullOrWhiteSpace(opts.Verbosity)) requestDict["verbosity"] = opts.Verbosity;
-    if (!string.IsNullOrWhiteSpace(opts.ReasoningEffort)) requestDict["reasoning_effort"] = opts.ReasoningEffort;
+    if (!string.IsNullOrWhiteSpace(opts.Verbosity))
+      requestDict["text"] = new Dictionary<string, object?> { { "verbosity", opts.Verbosity } };
+    if (!string.IsNullOrWhiteSpace(opts.ReasoningEffort))
+      requestDict["reasoning"] = new Dictionary<string, object?> { { "effort", opts.ReasoningEffort } };
     // /v1/responses may not support temperature for all models; omit if not needed
 
     return requestDict;
