@@ -19,15 +19,14 @@ class Program
   private const string CurrentAudioFile = "output.wav";
   private const string AudioPrefix = "output";
 
-  // Supported models and their endpoint type
-  // true = /v1/responses, false = /v1/chat/completions
-  private static readonly Dictionary<string, bool> SupportedModels = new(StringComparer.OrdinalIgnoreCase)
+  // All supported models now use /v1/responses
+  private static readonly HashSet<string> SupportedModels = new(StringComparer.OrdinalIgnoreCase)
   {
-    { Gpt41Model, false },
-    { Gpt41MiniModel, false },
-    { Gpt5Model, true },
-    { Gpt51Model, true },
-    { Gpt4oMiniTtsModel, false },
+    Gpt41Model,
+    Gpt41MiniModel,
+    Gpt5Model,
+    Gpt51Model,
+    Gpt4oMiniTtsModel,
     // Add more models here as needed
   };
 
@@ -67,17 +66,14 @@ class Program
       var opts = ParseArgs(args);
 
       // === Model validation ===
-      if (!SupportedModels.ContainsKey(opts.Model))
+      if (!SupportedModels.Contains(opts.Model))
       {
         Console.WriteLine("Error: model not supported.");
         Console.WriteLine("Supported models:");
-        foreach (var model in SupportedModels.Keys)
+        foreach (var model in SupportedModels)
           Console.WriteLine($"  - {model}");
         Environment.Exit(1);
       }
-
-      // Determine endpoint and model type
-      bool isResponsesApi = SupportedModels[opts.Model];
 
       // Read prompt
       if (!File.Exists(FileName))
@@ -102,13 +98,11 @@ class Program
         ? await LoadPngDataUrlsAsync(imagesDir)
         : new List<(string filePath, string dataUrl)>();
 
-      // Build request
-      var requestDict = isResponsesApi
-        ? BuildResponsesRequest(opts.Model, effectivePrompt, pngImages, opts)
-        : BuildChatRequest(opts.Model, effectivePrompt, pngImages, opts);
+      // Build request for /v1/responses
+      var requestDict = BuildResponsesRequest(opts.Model, effectivePrompt, pngImages, opts);
 
       // === Send request and dump request/response to request.md ===
-      var (responseText, usage, statusCode, rawResponse, requestBody) = await PostLlmAsync(requestDict, isResponsesApi);
+      var (responseText, usage, statusCode, rawResponse, requestBody) = await PostLlmAsync(requestDict);
 
       Console.WriteLine("=== CHAT RESPONSE ===");
       Console.WriteLine($"Status: {(int)statusCode} ({statusCode})");
@@ -262,51 +256,7 @@ class Program
     return results;
   }
 
-  // Build request for /v1/chat/completions endpoint (legacy models)
-  private static Dictionary<string, object?> BuildChatRequest(
-    string model,
-    string prompt,
-    List<(string filePath, string dataUrl)> pngImages,
-    Options opts)
-  {
-    var contentParts = new List<Dictionary<string, object?>>()
-    {
-      new() { { "type", "text" }, { "text", prompt } }
-    };
-
-    if (pngImages.Count > 0)
-    {
-      foreach (var (_, dataUrl) in pngImages)
-      {
-        contentParts.Add(new Dictionary<string, object?>
-        {
-          { "type", "image_url" },
-          { "image_url", new Dictionary<string, object?> { { "url", dataUrl } } }
-        });
-      }
-    }
-
-    var requestDict = new Dictionary<string, object?>
-    {
-      { "model", model },
-      {
-        "messages",
-        new object[]
-        {
-          new Dictionary<string, object?>
-          {
-            { "role", "user" },
-            { "content", contentParts }
-          }
-        }
-      },
-      { "temperature", opts.Temperature ?? 0.1 }
-    };
-
-    return requestDict;
-  }
-
-  // Build request for /v1/responses endpoint (modern models)
+  // Build request for /v1/responses endpoint (all models)
   private static Dictionary<string, object?> BuildResponsesRequest(
     string model,
     string prompt,
@@ -355,13 +305,11 @@ class Program
     return requestDict;
   }
 
-  // Send request to correct endpoint and parse response
+  // Send request to /v1/responses endpoint and parse response
   private static async Task<(string response, (int total, int prompt, int completion) usage, System.Net.HttpStatusCode statusCode, string raw, string requestBody)>
-    PostLlmAsync(Dictionary<string, object?> requestDict, bool isResponsesApi)
+    PostLlmAsync(Dictionary<string, object?> requestDict)
   {
-    string endpoint = isResponsesApi
-      ? "https://api.openai.com/v1/responses"
-      : "https://api.openai.com/v1/chat/completions";
+    string endpoint = "https://api.openai.com/v1/responses";
 
     string requestBody = JsonSerializer.Serialize(requestDict, JsonOpts);
     var content = new StringContent(requestBody, Encoding.UTF8, "application/json");
@@ -378,35 +326,8 @@ class Program
         using var doc = JsonDocument.Parse(raw);
         var root = doc.RootElement;
 
-        // Legacy: /v1/chat/completions
-        if (root.TryGetProperty("choices", out var choices)
-            && choices.ValueKind == JsonValueKind.Array
-            && choices.GetArrayLength() > 0)
-        {
-          var msg = choices[0].GetProperty("message");
-          if (msg.TryGetProperty("content", out var contentElem))
-          {
-            if (contentElem.ValueKind == JsonValueKind.String)
-            {
-              choiceText = contentElem.GetString() ?? "";
-            }
-            else if (contentElem.ValueKind == JsonValueKind.Array)
-            {
-              var sb = new StringBuilder();
-              foreach (var part in contentElem.EnumerateArray())
-              {
-                if (part.TryGetProperty("type", out var t) && t.GetString() == "text")
-                {
-                  if (part.TryGetProperty("text", out var txt))
-                    sb.Append(txt.GetString());
-                }
-              }
-              if (sb.Length > 0) choiceText = sb.ToString();
-            }
-          }
-        }
         // Modern: /v1/responses
-        else if (root.TryGetProperty("output", out var outputElem)
+        if (root.TryGetProperty("output", out var outputElem)
           && outputElem.ValueKind == JsonValueKind.Array)
         {
           // Find the first output object with type == "message" and status == "completed"
@@ -437,14 +358,9 @@ class Program
           }
         }
 
-        // Usage tokens (legacy and modern)
+        // Usage tokens (modern)
         if (root.TryGetProperty("usage", out var usageElem))
         {
-          // Legacy
-          if (usageElem.TryGetProperty("prompt_tokens", out var pt)) promptTokens = pt.GetInt32();
-          if (usageElem.TryGetProperty("completion_tokens", out var ct)) completionTokens = ct.GetInt32();
-          if (usageElem.TryGetProperty("total_tokens", out var tt)) totalTokens = tt.GetInt32();
-          // Modern (sometimes uses input_tokens/output_tokens/total_tokens)
           if (usageElem.TryGetProperty("input_tokens", out var it)) promptTokens = it.GetInt32();
           if (usageElem.TryGetProperty("output_tokens", out var ot)) completionTokens = ot.GetInt32();
           if (usageElem.TryGetProperty("total_tokens", out var ttt)) totalTokens = ttt.GetInt32();
