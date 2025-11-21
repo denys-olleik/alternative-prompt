@@ -25,6 +25,7 @@ class Program
     { DefaultModel, false },
     { MiniModel, false },
     { ReasoningModel, true },
+    { "gpt-5.1-2025-11-13", true },
     { TtsModel, false }, // TTS model is handled separately, but included for completeness
     // Add more models here as needed
   };
@@ -105,7 +106,7 @@ class Program
         ? BuildResponsesRequest(opts.Model, effectivePrompt, pngImages, opts)
         : BuildChatRequest(opts.Model, effectivePrompt, pngImages, opts);
 
-      // Send request to correct endpoint
+      // === Send request and dump request/response to request.md ===
       var (responseText, usage, statusCode, rawResponse, requestBody) = await PostLlmAsync(requestDict, isResponsesApi);
 
       Console.WriteLine("=== CHAT RESPONSE ===");
@@ -321,10 +322,10 @@ class Program
       foreach (var (_, dataUrl) in pngImages)
       {
         contentParts.Add(new Dictionary<string, object?>
-      {
-        { "type", "image_url" },
-        { "image_url", new Dictionary<string, object?> { { "url", dataUrl } } }
-      });
+        {
+          { "type", "image_url" },
+          { "image_url", new Dictionary<string, object?> { { "url", dataUrl } } }
+        });
       }
     }
 
@@ -376,6 +377,7 @@ class Program
         using var doc = JsonDocument.Parse(raw);
         var root = doc.RootElement;
 
+        // Legacy: /v1/chat/completions
         if (root.TryGetProperty("choices", out var choices)
             && choices.ValueKind == JsonValueKind.Array
             && choices.GetArrayLength() > 0)
@@ -402,12 +404,49 @@ class Program
             }
           }
         }
+        // Modern: /v1/responses
+        else if (root.TryGetProperty("output", out var outputElem)
+          && outputElem.ValueKind == JsonValueKind.Array)
+        {
+          // Find the first output object with type == "message" and status == "completed"
+          foreach (var outputObj in outputElem.EnumerateArray())
+          {
+            if (outputObj.TryGetProperty("type", out var typeProp)
+                && typeProp.GetString() == "message"
+                && outputObj.TryGetProperty("status", out var statusProp)
+                && statusProp.GetString() == "completed"
+                && outputObj.TryGetProperty("content", out var contentArr)
+                && contentArr.ValueKind == JsonValueKind.Array)
+            {
+              var sb = new StringBuilder();
+              foreach (var part in contentArr.EnumerateArray())
+              {
+                if (part.TryGetProperty("type", out var t) && t.GetString() == "output_text")
+                {
+                  if (part.TryGetProperty("text", out var txt))
+                    sb.Append(txt.GetString());
+                }
+              }
+              if (sb.Length > 0)
+              {
+                choiceText = sb.ToString();
+                break; // Use the first completed message
+              }
+            }
+          }
+        }
 
+        // Usage tokens (legacy and modern)
         if (root.TryGetProperty("usage", out var usageElem))
         {
+          // Legacy
           if (usageElem.TryGetProperty("prompt_tokens", out var pt)) promptTokens = pt.GetInt32();
           if (usageElem.TryGetProperty("completion_tokens", out var ct)) completionTokens = ct.GetInt32();
           if (usageElem.TryGetProperty("total_tokens", out var tt)) totalTokens = tt.GetInt32();
+          // Modern (sometimes uses input_tokens/output_tokens/total_tokens)
+          if (usageElem.TryGetProperty("input_tokens", out var it)) promptTokens = it.GetInt32();
+          if (usageElem.TryGetProperty("output_tokens", out var ot)) completionTokens = ot.GetInt32();
+          if (usageElem.TryGetProperty("total_tokens", out var ttt)) totalTokens = ttt.GetInt32();
         }
       }
       catch { }
