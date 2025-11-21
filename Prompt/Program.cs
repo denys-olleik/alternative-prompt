@@ -36,8 +36,7 @@ class Program
     double? Temperature,
     string? Verbosity,
     string? ReasoningEffort,
-    string? AudioInstruction,
-    List<string> FilesToInject
+    string? AudioInstruction
   );
 
   static async Task Main(string[] args)
@@ -89,13 +88,8 @@ class Program
       var archiveDir = Path.Combine(cwd, "archive");
       Directory.CreateDirectory(archiveDir);
 
-      // Optionally load files to inject
-      string injectedBlock = await BuildInjectedFilesBlockAsync(opts.FilesToInject);
-
-      // Compose the effective prompt: [files block][original prompt]
-      string effectivePrompt = string.IsNullOrEmpty(injectedBlock)
-        ? originalPrompt
-        : injectedBlock + originalPrompt;
+      // Compose the effective prompt (no file injection)
+      string effectivePrompt = originalPrompt;
 
       // Load images (optional)
       var pngImages = opts.IncludeImages
@@ -113,12 +107,6 @@ class Program
 
       if ((int)statusCode >= 200 && (int)statusCode < 300)
       {
-        // Ensure prompt.md has injected files at top (persist them)
-        if (!string.IsNullOrEmpty(injectedBlock))
-        {
-          await File.WriteAllTextAsync(FileName, effectivePrompt, Encoding.UTF8);
-        }
-
         // Append response and possibly archive
         var lastAppendedBlock = await AppendResponseBlockAsync(FileName, responseText, model, usage);
 
@@ -173,7 +161,6 @@ class Program
     string? verbosity = null;
     string? reasoningEffort = null;
     string? audioInstruction = null;
-    var filesToInject = new List<string>();
 
     for (int i = 0; i < args.Length; i++)
     {
@@ -213,102 +200,12 @@ class Program
           else
             audioInstruction = "";
           break;
-        case "--files":
-          if (i + 1 >= args.Length) throw new ArgumentException("Missing value for --files.");
-          // Accept a single token that may contain spaces if quoted by the shell.
-          // Example: --files "Program.cs Component1.cs"
-          var filesArg = args[++i];
-          // Split on whitespace
-          foreach (var f in filesArg.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
-          {
-            filesToInject.Add(f);
-          }
-          break;
         default:
           throw new ArgumentException($"Unknown argument: {raw}");
       }
     }
 
-    return new Options(useReasoning, useMini, includeImages, doArchive, temperature, verbosity, reasoningEffort, audioInstruction, filesToInject);
-  }
-
-  private static async Task<string> BuildInjectedFilesBlockAsync(List<string> files)
-  {
-    if (files == null || files.Count == 0) return "";
-
-    var cwd = Directory.GetCurrentDirectory();
-    var sb = new StringBuilder();
-
-    bool first = true;
-    foreach (var name in files)
-    {
-      // Only filename + extension are supported (no directories)
-      if (name.Contains(Path.DirectorySeparatorChar) || name.Contains(Path.AltDirectorySeparatorChar))
-      {
-        Console.WriteLine($"Warning: ignoring path component in --files entry '{name}'. Only filenames (no paths) are allowed.");
-        continue;
-      }
-
-      var path = Path.Combine(cwd, name);
-      if (!File.Exists(path))
-      {
-        Console.WriteLine($"Warning: file '{name}' not found in {cwd}; skipping.");
-        continue;
-      }
-
-      string codeLang = InferFenceLanguageFromExtension(Path.GetExtension(name));
-      string fileContent;
-      try
-      {
-        fileContent = await File.ReadAllTextAsync(path, Encoding.UTF8);
-      }
-      catch (Exception ex)
-      {
-        Console.WriteLine($"Warning: could not read '{name}': {ex.Message}; skipping.");
-        continue;
-      }
-
-      if (!first) sb.AppendLine();
-      first = false;
-
-      // Fence includes language and the filename after language for clarity:
-      // ```cs file1.cs
-      sb.Append("```").Append(codeLang);
-      if (!string.IsNullOrWhiteSpace(codeLang)) sb.Append(' ');
-      sb.AppendLine(name);
-      sb.AppendLine(fileContent);
-      sb.AppendLine("```");
-    }
-
-    if (sb.Length == 0) return "";
-    // Ensure a single blank line after the injected set before original prompt
-    sb.AppendLine();
-    return sb.ToString();
-  }
-
-  private static string InferFenceLanguageFromExtension(string ext)
-  {
-    if (string.IsNullOrWhiteSpace(ext)) return "";
-    ext = ext.Trim().TrimStart('.').ToLowerInvariant();
-    return ext switch
-    {
-      "cs" => "cs",
-      "csharp" => "cs",
-      "js" => "javascript",
-      "ts" => "ts",
-      "json" => "json",
-      "xml" => "xml",
-      "html" => "html",
-      "css" => "css",
-      "md" => "md",
-      "py" => "python",
-      "sh" => "bash",
-      "bash" => "bash",
-      "yml" => "yaml",
-      "yaml" => "yaml",
-      "txt" => "text",
-      _ => ""
-    };
+    return new Options(useReasoning, useMini, includeImages, doArchive, temperature, verbosity, reasoningEffort, audioInstruction);
   }
 
   private static async Task<List<(string filePath, string dataUrl)>> LoadPngDataUrlsAsync(string imagesDir)
