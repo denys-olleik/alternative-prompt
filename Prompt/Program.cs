@@ -609,8 +609,7 @@ class Program
       { "model", TtsModel },
       { "voice", voice },  // alloy | verse | sage
       { "input", text },
-      { "format", "wav" },
-      { "speed_instructions", "fast" }
+      { "format", "wav" }
     };
 
     string requestBody = JsonSerializer.Serialize(requestDict, JsonOpts);
