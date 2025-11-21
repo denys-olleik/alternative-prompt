@@ -29,8 +29,7 @@ class Program
   };
 
   private record Options(
-    bool UseReasoning,
-    bool UseMini,
+    string Model,
     bool IncludeImages,
     bool DoArchive,
     double? Temperature,
@@ -53,25 +52,8 @@ class Program
 
       var opts = ParseArgs(args);
 
-      // Resolve model
-      string model;
-      bool isReasoningModel;
-      if (opts.UseReasoning)
-      {
-        model = ReasoningModel;
-        isReasoningModel = true;
-        if (opts.UseMini) Console.WriteLine("Note: -r takes precedence; -m ignored.");
-      }
-      else if (opts.UseMini)
-      {
-        model = MiniModel;
-        isReasoningModel = false;
-      }
-      else
-      {
-        model = DefaultModel;
-        isReasoningModel = false;
-      }
+      // Determine endpoint and model type
+      bool isResponsesApi = IsResponsesApiModel(opts.Model);
 
       // Read prompt
       if (!File.Exists(FileName))
@@ -97,10 +79,12 @@ class Program
         : new List<(string filePath, string dataUrl)>();
 
       // Build request
-      var requestDict = BuildChatRequest(model, effectivePrompt, pngImages, isReasoningModel, opts);
+      var requestDict = isResponsesApi
+        ? BuildResponsesRequest(opts.Model, effectivePrompt, pngImages, opts)
+        : BuildChatRequest(opts.Model, effectivePrompt, pngImages, opts);
 
-      // Send request
-      var (responseText, usage, statusCode, rawResponse) = await PostChatAsync(requestDict);
+      // Send request to correct endpoint
+      var (responseText, usage, statusCode, rawResponse) = await PostLlmAsync(requestDict, isResponsesApi);
 
       Console.WriteLine("=== CHAT RESPONSE ===");
       Console.WriteLine($"Status: {(int)statusCode} ({statusCode})");
@@ -108,7 +92,7 @@ class Program
       if ((int)statusCode >= 200 && (int)statusCode < 300)
       {
         // Append response and possibly archive
-        var lastAppendedBlock = await AppendResponseBlockAsync(FileName, responseText, model, usage);
+        var lastAppendedBlock = await AppendResponseBlockAsync(FileName, responseText, opts.Model, usage);
 
         if (pngImages.Count > 0)
         {
@@ -151,10 +135,13 @@ class Program
     }
   }
 
+  // Parse CLI args: model is required first argument, then flags
   private static Options ParseArgs(string[] args)
   {
-    bool useReasoning = false;
-    bool useMini = false;
+    if (args.Length == 0)
+      throw new ArgumentException("First argument must be the model name (e.g., gpt-5-2025-08-07).");
+
+    string model = args[0];
     bool includeImages = false;
     bool doArchive = false;
     double? temperature = null;
@@ -162,15 +149,13 @@ class Program
     string? reasoningEffort = null;
     string? audioInstruction = null;
 
-    for (int i = 0; i < args.Length; i++)
+    for (int i = 1; i < args.Length; i++)
     {
       string raw = args[i];
       string arg = raw.ToLowerInvariant();
 
       switch (arg)
       {
-        case "-r": useReasoning = true; break;
-        case "-m": useMini = true; break;
         case "--images": includeImages = true; break;
         case "--archive": doArchive = true; break;
         case "-t":
@@ -205,7 +190,15 @@ class Program
       }
     }
 
-    return new Options(useReasoning, useMini, includeImages, doArchive, temperature, verbosity, reasoningEffort, audioInstruction);
+    return new Options(model, includeImages, doArchive, temperature, verbosity, reasoningEffort, audioInstruction);
+  }
+
+  // Determine if model uses /v1/responses endpoint
+  private static bool IsResponsesApiModel(string model)
+  {
+    // Add new models here as needed
+    return model.StartsWith("gpt-5", StringComparison.OrdinalIgnoreCase)
+      || model.Contains("codex", StringComparison.OrdinalIgnoreCase);
   }
 
   private static async Task<List<(string filePath, string dataUrl)>> LoadPngDataUrlsAsync(string imagesDir)
@@ -240,11 +233,55 @@ class Program
     return results;
   }
 
+  // Build request for /v1/chat/completions endpoint (legacy models)
   private static Dictionary<string, object?> BuildChatRequest(
     string model,
     string prompt,
     List<(string filePath, string dataUrl)> pngImages,
-    bool isReasoningModel,
+    Options opts)
+  {
+    var contentParts = new List<Dictionary<string, object?>>()
+    {
+      new() { { "type", "text" }, { "text", prompt } }
+    };
+
+    if (pngImages.Count > 0)
+    {
+      foreach (var (_, dataUrl) in pngImages)
+      {
+        contentParts.Add(new Dictionary<string, object?>
+        {
+          { "type", "image_url" },
+          { "image_url", new Dictionary<string, object?> { { "url", dataUrl } } }
+        });
+      }
+    }
+
+    var requestDict = new Dictionary<string, object?>
+    {
+      { "model", model },
+      {
+        "messages",
+        new object[]
+        {
+          new Dictionary<string, object?>
+          {
+            { "role", "user" },
+            { "content", contentParts }
+          }
+        }
+      },
+      { "temperature", opts.Temperature ?? 0.1 }
+    };
+
+    return requestDict;
+  }
+
+  // Build request for /v1/responses endpoint (modern models)
+  private static Dictionary<string, object?> BuildResponsesRequest(
+    string model,
+    string prompt,
+    List<(string filePath, string dataUrl)> pngImages,
     Options opts)
   {
     var contentParts = new List<Dictionary<string, object?>>()
@@ -280,26 +317,24 @@ class Program
       }
     };
 
-    if (isReasoningModel)
-    {
-      if (opts.Temperature.HasValue) Console.WriteLine("Note: -t ignored for gpt-5.");
-      if (!string.IsNullOrWhiteSpace(opts.Verbosity)) requestDict["verbosity"] = opts.Verbosity;
-      if (!string.IsNullOrWhiteSpace(opts.ReasoningEffort)) requestDict["reasoning_effort"] = opts.ReasoningEffort;
-    }
-    else
-    {
-      requestDict["temperature"] = opts.Temperature ?? 0.1;
-    }
+    if (!string.IsNullOrWhiteSpace(opts.Verbosity)) requestDict["verbosity"] = opts.Verbosity;
+    if (!string.IsNullOrWhiteSpace(opts.ReasoningEffort)) requestDict["reasoning_effort"] = opts.ReasoningEffort;
+    // /v1/responses may not support temperature for all models; omit if not needed
 
     return requestDict;
   }
 
+  // Send request to correct endpoint and parse response
   private static async Task<(string response, (int total, int prompt, int completion) usage, System.Net.HttpStatusCode statusCode, string raw)>
-    PostChatAsync(Dictionary<string, object?> requestDict)
+    PostLlmAsync(Dictionary<string, object?> requestDict, bool isResponsesApi)
   {
+    string endpoint = isResponsesApi
+      ? "https://api.openai.com/v1/responses"
+      : "https://api.openai.com/v1/chat/completions";
+
     string requestBody = JsonSerializer.Serialize(requestDict, JsonOpts);
     var content = new StringContent(requestBody, Encoding.UTF8, "application/json");
-    var response = await Http.PostAsync("https://api.openai.com/v1/chat/completions", content);
+    var response = await Http.PostAsync(endpoint, content);
     string raw = await response.Content.ReadAsStringAsync();
 
     string choiceText = "";
