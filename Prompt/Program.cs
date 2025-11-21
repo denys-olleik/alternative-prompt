@@ -12,6 +12,7 @@ class Program
   private const string ReasoningModel = "gpt-5-2025-08-07";
   private const string TtsModel = "gpt-4o-mini-tts";
   private const string FileName = "prompt.md";
+  private const string ErrorFileName = "error.md";
 
   private const string AudioArchiveDirName = "audio-archive";
   private const string CurrentAudioFile = "output.wav";
@@ -25,6 +26,7 @@ class Program
     { MiniModel, false },
     { ReasoningModel, true },
     { TtsModel, false }, // TTS model is handled separately, but included for completeness
+    // Add more models here as needed
   };
 
   private static readonly JsonSerializerOptions JsonOpts = new()
@@ -104,7 +106,7 @@ class Program
         : BuildChatRequest(opts.Model, effectivePrompt, pngImages, opts);
 
       // Send request to correct endpoint
-      var (responseText, usage, statusCode, rawResponse) = await PostLlmAsync(requestDict, isResponsesApi);
+      var (responseText, usage, statusCode, rawResponse, requestBody) = await PostLlmAsync(requestDict, isResponsesApi);
 
       Console.WriteLine("=== CHAT RESPONSE ===");
       Console.WriteLine($"Status: {(int)statusCode} ({statusCode})");
@@ -146,11 +148,24 @@ class Program
       else
       {
         Console.WriteLine("Request failed; not appending or archiving.");
+        // Write diagnostics to error.md
+        await WriteErrorDiagnosticsAsync(ErrorFileName, statusCode, requestBody, rawResponse);
+        Console.WriteLine($"See {ErrorFileName} for details.");
       }
     }
     catch (Exception ex)
     {
       Console.WriteLine($"Error: {ex.Message}");
+      try
+      {
+        await File.WriteAllTextAsync(ErrorFileName,
+          $"# Unhandled Exception\n\n" +
+          $"**Time (UTC):** {DateTime.UtcNow:O}\n\n" +
+          $"**Message:** {ex.Message}\n\n" +
+          $"**StackTrace:**\n```\n{ex.StackTrace}\n```\n");
+        Console.WriteLine($"See {ErrorFileName} for details.");
+      }
+      catch { }
       Environment.Exit(1);
     }
   }
@@ -317,7 +332,7 @@ class Program
     {
       { "model", model },
       {
-        "messages",
+        "input",
         new object[]
         {
           new Dictionary<string, object?>
@@ -337,7 +352,7 @@ class Program
   }
 
   // Send request to correct endpoint and parse response
-  private static async Task<(string response, (int total, int prompt, int completion) usage, System.Net.HttpStatusCode statusCode, string raw)>
+  private static async Task<(string response, (int total, int prompt, int completion) usage, System.Net.HttpStatusCode statusCode, string raw, string requestBody)>
     PostLlmAsync(Dictionary<string, object?> requestDict, bool isResponsesApi)
   {
     string endpoint = isResponsesApi
@@ -396,7 +411,36 @@ class Program
       catch { }
     }
 
-    return (choiceText, (totalTokens, promptTokens, completionTokens), response.StatusCode, raw);
+    return (choiceText, (totalTokens, promptTokens, completionTokens), response.StatusCode, raw, requestBody);
+  }
+
+  private static async Task WriteErrorDiagnosticsAsync(string errorFile, System.Net.HttpStatusCode statusCode, string requestBody, string rawResponse)
+  {
+    var sb = new StringBuilder();
+    sb.AppendLine("# API Error");
+    sb.AppendLine();
+    sb.AppendLine($"**Time (UTC):** {DateTime.UtcNow:O}");
+    sb.AppendLine();
+    sb.AppendLine($"**Status:** {(int)statusCode} ({statusCode})");
+    sb.AppendLine();
+    sb.AppendLine("## Request Payload");
+    sb.AppendLine("```json");
+    sb.AppendLine(requestBody);
+    sb.AppendLine("```");
+    sb.AppendLine();
+    sb.AppendLine("## Raw API Response");
+    sb.AppendLine("```json");
+    sb.AppendLine(rawResponse);
+    sb.AppendLine("```");
+
+    try
+    {
+      await File.WriteAllTextAsync(errorFile, sb.ToString(), Encoding.UTF8);
+    }
+    catch (Exception ex)
+    {
+      Console.WriteLine($"Failed to write error diagnostics: {ex.Message}");
+    }
   }
 
   private static async Task<string> AppendResponseBlockAsync(
