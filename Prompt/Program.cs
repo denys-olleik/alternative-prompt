@@ -7,10 +7,11 @@ using System.Text.RegularExpressions;
 class Program
 {
   // Constants (preserve names and values)
-  private const string DefaultModel = "gpt-4.1-2025-04-14";
-  private const string MiniModel = "gpt-4.1-mini-2025-04-14";
-  private const string ReasoningModel = "gpt-5-2025-08-07";
-  private const string TtsModel = "gpt-4o-mini-tts";
+  private const string Gpt41Model = "gpt-4.1-2025-04-14";
+  private const string Gpt41MiniModel = "gpt-4.1-mini-2025-04-14";
+  private const string Gpt5Model = "gpt-5-2025-08-07";
+  private const string Gpt51Model = "gpt-5.1-2025-11-13";
+  private const string Gpt4oMiniTtsModel = "gpt-4o-mini-tts";
   private const string FileName = "prompt.md";
   private const string ErrorFileName = "error.md";
 
@@ -22,11 +23,11 @@ class Program
   // true = /v1/responses, false = /v1/chat/completions
   private static readonly Dictionary<string, bool> SupportedModels = new(StringComparer.OrdinalIgnoreCase)
   {
-    { DefaultModel, false },
-    { MiniModel, false },
-    { ReasoningModel, true },
-    { "gpt-5.1-2025-11-13", true },
-    { TtsModel, false }, // TTS model is handled separately, but included for completeness
+    { Gpt41Model, false },
+    { Gpt41MiniModel, false },
+    { Gpt5Model, true },
+    { Gpt51Model, true },
+    { Gpt4oMiniTtsModel, false },
     // Add more models here as needed
   };
 
@@ -635,7 +636,7 @@ class Program
   {
     var requestDict = new Dictionary<string, object?>
     {
-      { "model", TtsModel },
+      { "model", Gpt4oMiniTtsModel },
       { "voice", voice },  // alloy | verse | sage
       { "input", text },
       { "format", "wav" }
