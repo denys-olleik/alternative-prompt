@@ -101,7 +101,7 @@ class Program
       // Build request for /v1/responses
       var requestDict = BuildResponsesRequest(opts.Model, effectivePrompt, pngImages, opts);
 
-      // === Send request and dump request/response to request.md ===
+      // === Send request ===
       var (responseText, usage, statusCode, rawResponse, requestBody) = await PostLlmAsync(requestDict);
 
       Console.WriteLine("=== CHAT RESPONSE ===");
