@@ -181,6 +181,20 @@ class Program
         || model.Equals(Gpt41MiniModel, StringComparison.OrdinalIgnoreCase);
   }
 
+  // Helpers to detect model families or exact support
+  private static bool IsGpt5Family(string model)
+  {
+    return model.Equals(Gpt5Model, StringComparison.OrdinalIgnoreCase)
+        || model.Equals(Gpt51Model, StringComparison.OrdinalIgnoreCase);
+  }
+
+  // Define which models accept reasoning.effort="none"
+  private static bool ModelSupportsReasoningNone(string model)
+  {
+    // Update this when a model truly supports "none". Based on current discussion, none is not accepted by GPT-5/5.1.
+    return false;
+  }
+
   // Parse CLI args: model is required first argument, then flags
   private static Options ParseArgs(string[] args)
   {
@@ -221,9 +235,9 @@ class Program
         case "-e":
           if (i + 1 >= args.Length) throw new ArgumentException("Missing value for -e.");
           var e = args[++i].ToLowerInvariant();
-          var allowedE = new HashSet<string> { "minimal", "low", "medium", "high" };
+          var allowedE = new HashSet<string> { "none", "minimal", "low", "medium", "high" };
           if (!allowedE.Contains(e))
-            throw new ArgumentException("Invalid -e; allowed: minimal | low | medium | high.");
+            throw new ArgumentException("Invalid -e; allowed: none | minimal | low | medium | high.");
           reasoningEffort = e;
           break;
         case "--audio":
@@ -317,8 +331,29 @@ class Program
 
     if (!string.IsNullOrWhiteSpace(opts.Verbosity))
       requestDict["text"] = new Dictionary<string, object?> { { "verbosity", opts.Verbosity } };
+
+    // Reasoning effort handling with "none" support only for models that accept it.
     if (!string.IsNullOrWhiteSpace(opts.ReasoningEffort))
-      requestDict["reasoning"] = new Dictionary<string, object?> { { "effort", opts.ReasoningEffort } };
+    {
+      string effort = opts.ReasoningEffort!;
+      if (effort == "none")
+      {
+        if (ModelSupportsReasoningNone(model))
+        {
+          requestDict["reasoning"] = new Dictionary<string, object?> { { "effort", "none" } };
+        }
+        else
+        {
+          // For models that don't accept "none", omit the field entirely
+          // Alternatively: map to "minimal" if you prefer a fallback.
+        }
+      }
+      else
+      {
+        requestDict["reasoning"] = new Dictionary<string, object?> { { "effort", effort } };
+      }
+    }
+
     // Explicitly add temperature if resolvedTemperature is not null
     if (resolvedTemperature is double t)
     {
