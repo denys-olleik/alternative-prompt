@@ -48,7 +48,8 @@ class Program
     double? Temperature,
     string? Verbosity,
     string? ReasoningEffort,
-    string? AudioInstruction
+    string? AudioInstruction,
+    bool TemperatureExplicitlySet // <-- Track if specified with -t
   );
 
   static async Task Main(string[] args)
@@ -75,6 +76,13 @@ class Program
         Environment.Exit(1);
       }
 
+      // If using a 4.1 model and temperature not explicitly set, use 0.1
+      double? resolvedTemperature = opts.Temperature;
+      if (!opts.TemperatureExplicitlySet && IsGpt41Family(opts.Model))
+      {
+        resolvedTemperature = 0.1;
+      }
+
       // Read prompt
       if (!File.Exists(FileName))
       {
@@ -98,8 +106,8 @@ class Program
         ? await LoadPngDataUrlsAsync(imagesDir)
         : new List<(string filePath, string dataUrl)>();
 
-      // Build request for /v1/responses
-      var requestDict = BuildResponsesRequest(opts.Model, effectivePrompt, pngImages, opts);
+      // Build request for /v1/responses (pass in resolvedTemperature!)
+      var requestDict = BuildResponsesRequest(opts.Model, effectivePrompt, pngImages, opts, resolvedTemperature);
 
       // === Send request ===
       var (responseText, usage, statusCode, rawResponse, requestBody) = await PostLlmAsync(requestDict);
@@ -166,6 +174,13 @@ class Program
     }
   }
 
+  // New helper for defaulting logic
+  private static bool IsGpt41Family(string model)
+  {
+    return model.Equals(Gpt41Model, StringComparison.OrdinalIgnoreCase)
+        || model.Equals(Gpt41MiniModel, StringComparison.OrdinalIgnoreCase);
+  }
+
   // Parse CLI args: model is required first argument, then flags
   private static Options ParseArgs(string[] args)
   {
@@ -179,6 +194,7 @@ class Program
     string? verbosity = null;
     string? reasoningEffort = null;
     string? audioInstruction = null;
+    bool temperatureExplicitlySet = false;
 
     for (int i = 1; i < args.Length; i++)
     {
@@ -193,6 +209,7 @@ class Program
           if (i + 1 >= args.Length) throw new ArgumentException("Missing value for -t.");
           if (!double.TryParse(args[++i], out var t)) throw new ArgumentException("Invalid temperature value after -t.");
           temperature = t;
+          temperatureExplicitlySet = true;
           break;
         case "-v":
           if (i + 1 >= args.Length) throw new ArgumentException("Missing value for -v.");
@@ -221,7 +238,7 @@ class Program
       }
     }
 
-    return new Options(model, includeImages, doArchive, temperature, verbosity, reasoningEffort, audioInstruction);
+    return new Options(model, includeImages, doArchive, temperature, verbosity, reasoningEffort, audioInstruction, temperatureExplicitlySet);
   }
 
   private static async Task<List<(string filePath, string dataUrl)>> LoadPngDataUrlsAsync(string imagesDir)
@@ -261,7 +278,9 @@ class Program
     string model,
     string prompt,
     List<(string filePath, string dataUrl)> pngImages,
-    Options opts)
+    Options opts,
+    double? resolvedTemperature // <-- new parameter
+    )
   {
     var contentParts = new List<Dictionary<string, object?>>()
     {
@@ -300,7 +319,11 @@ class Program
       requestDict["text"] = new Dictionary<string, object?> { { "verbosity", opts.Verbosity } };
     if (!string.IsNullOrWhiteSpace(opts.ReasoningEffort))
       requestDict["reasoning"] = new Dictionary<string, object?> { { "effort", opts.ReasoningEffort } };
-    // /v1/responses may not support temperature for all models; omit if not needed
+    // Explicitly add temperature if resolvedTemperature is not null
+    if (resolvedTemperature is double t)
+    {
+      requestDict["temperature"] = t;
+    }
 
     return requestDict;
   }
