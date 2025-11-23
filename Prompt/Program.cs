@@ -83,6 +83,9 @@ class Program
         resolvedTemperature = 0.1;
       }
 
+      // Validate/normalize reasoning effort per-model (fail fast on unsupported)
+      string? validatedEffort = ValidateAndNormalizeReasoningEffort(opts.ReasoningEffort, opts.Model);
+
       // Read prompt
       if (!File.Exists(FileName))
       {
@@ -107,7 +110,7 @@ class Program
         : new List<(string filePath, string dataUrl)>();
 
       // Build request for /v1/responses (pass in resolvedTemperature!)
-      var requestDict = BuildResponsesRequest(opts.Model, effectivePrompt, pngImages, opts, resolvedTemperature);
+      var requestDict = BuildResponsesRequest(opts.Model, effectivePrompt, pngImages, opts.Verbosity, validatedEffort, resolvedTemperature);
 
       // === Send request ===
       var (responseText, usage, statusCode, rawResponse, requestBody) = await PostLlmAsync(requestDict);
@@ -188,11 +191,63 @@ class Program
         || model.Equals(Gpt51Model, StringComparison.OrdinalIgnoreCase);
   }
 
-  // Define which models accept reasoning.effort="none"
-  private static bool ModelSupportsReasoningNone(string model)
+  private static bool IsGpt51(string model)
   {
-    // Update this when a model truly supports "none". Based on current discussion, none is not accepted by GPT-5/5.1.
-    return false;
+    return model.Equals(Gpt51Model, StringComparison.OrdinalIgnoreCase);
+  }
+
+  private static bool IsGpt5(string model)
+  {
+    return model.Equals(Gpt5Model, StringComparison.OrdinalIgnoreCase);
+  }
+
+  // Define reasoning effort support per model
+  // Policy:
+  // - GPT-5: supports minimal|low|medium|high (NOT none)
+  // - GPT-5.1: supports none|low|medium|high (NOT minimal)
+  // - 4.1 family: supports minimal|low|medium|high (NOT none)
+  private static string? ValidateAndNormalizeReasoningEffort(string? requestedEffort, string model)
+  {
+    if (string.IsNullOrWhiteSpace(requestedEffort)) return null;
+    var effort = requestedEffort.Trim().ToLowerInvariant();
+
+    if (IsGpt51(model))
+    {
+      // GPT-5.1: none|low|medium|high
+      if (effort is "none" or "low" or "medium" or "high")
+        return effort;
+
+      if (effort == "minimal")
+        throw new ArgumentException("Invalid -e for GPT-5.1: 'minimal' is not supported; use 'none', 'low', 'medium', or 'high'.");
+    }
+    else if (IsGpt5(model))
+    {
+      // GPT-5: minimal|low|medium|high
+      if (effort is "minimal" or "low" or "medium" or "high")
+        return effort;
+
+      if (effort == "none")
+        throw new ArgumentException("Invalid -e for GPT-5: 'none' is not supported; use 'minimal', 'low', 'medium', or 'high'.");
+    }
+    else if (IsGpt41Family(model))
+    {
+      // 4.1 family: minimal|low|medium|high
+      if (effort is "minimal" or "low" or "medium" or "high")
+        return effort;
+
+      if (effort == "none")
+        throw new ArgumentException("Invalid -e for GPT-4.1 family: 'none' is not supported; use 'minimal', 'low', 'medium', or 'high'.");
+    }
+    else
+    {
+      // Default: allow minimal|low|medium|high; disallow none unless explicitly known
+      if (effort == "none")
+        throw new ArgumentException($"Invalid -e for {model}: 'none' not supported.");
+      if (effort is "minimal" or "low" or "medium" or "high")
+        return effort;
+    }
+
+    throw new ArgumentException("Invalid -e; allowed values depend on model.");
   }
 
   // Parse CLI args: model is required first argument, then flags
@@ -292,8 +347,9 @@ class Program
     string model,
     string prompt,
     List<(string filePath, string dataUrl)> pngImages,
-    Options opts,
-    double? resolvedTemperature // <-- new parameter
+    string? verbosity,
+    string? validatedEffort,
+    double? resolvedTemperature
     )
   {
     var contentParts = new List<Dictionary<string, object?>>()
@@ -329,29 +385,15 @@ class Program
       }
     };
 
-    if (!string.IsNullOrWhiteSpace(opts.Verbosity))
-      requestDict["text"] = new Dictionary<string, object?> { { "verbosity", opts.Verbosity } };
+    if (!string.IsNullOrWhiteSpace(verbosity))
+      requestDict["text"] = new Dictionary<string, object?> { { "verbosity", verbosity } };
 
-    // Reasoning effort handling with "none" support only for models that accept it.
-    if (!string.IsNullOrWhiteSpace(opts.ReasoningEffort))
+    // Reasoning effort handling per validatedEffort:
+    // - If null: omit field.
+    // - If provided: send exactly as validated (per model-appropriate set).
+    if (!string.IsNullOrWhiteSpace(validatedEffort))
     {
-      string effort = opts.ReasoningEffort!;
-      if (effort == "none")
-      {
-        if (ModelSupportsReasoningNone(model))
-        {
-          requestDict["reasoning"] = new Dictionary<string, object?> { { "effort", "none" } };
-        }
-        else
-        {
-          // For models that don't accept "none", omit the field entirely
-          // Alternatively: map to "minimal" if you prefer a fallback.
-        }
-      }
-      else
-      {
-        requestDict["reasoning"] = new Dictionary<string, object?> { { "effort", effort } };
-      }
+      requestDict["reasoning"] = new Dictionary<string, object?> { { "effort", validatedEffort } };
     }
 
     // Explicitly add temperature if resolvedTemperature is not null
