@@ -363,8 +363,8 @@ class Program
       {
         contentParts.Add(new Dictionary<string, object?>
         {
-          { "type", "image_url" },
-          { "image_url", new Dictionary<string, object?> { { "url", dataUrl } } }
+          { "type", "input_image" },
+          { "image_url", dataUrl }
         });
       }
     }
