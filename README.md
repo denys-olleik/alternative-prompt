@@ -1,4 +1,4 @@
-Documentation
+## Documentation
 Sends the content of `prompt.md` as request and appends the response to the end of the file with delimeter and model used.
 
 ## How to use
