@@ -6,11 +6,12 @@ using System.Text.RegularExpressions;
 
 class Program
 {
-  // Constants (preserve names and values)
+  // Constants (preserve existing names and values; add GPT‑5.2)
   private const string Gpt41Model = "gpt-4.1-2025-04-14";
   private const string Gpt41MiniModel = "gpt-4.1-mini-2025-04-14";
   private const string Gpt5Model = "gpt-5-2025-08-07";
   private const string Gpt51Model = "gpt-5.1-2025-11-13";
+  private const string Gpt52Model = "gpt-5.2-2025-12-11";
   private const string Gpt4oMiniTtsModel = "gpt-4o-mini-tts";
   private const string FileName = "prompt.md";
   private const string ErrorFileName = "error.md";
@@ -26,6 +27,7 @@ class Program
     Gpt41MiniModel,
     Gpt5Model,
     Gpt51Model,
+    Gpt52Model,      // <-- added GPT‑5.2
     Gpt4oMiniTtsModel,
     // Add more models here as needed
   };
@@ -110,7 +112,14 @@ class Program
         : new List<(string filePath, string dataUrl)>();
 
       // Build request for /v1/responses (pass in resolvedTemperature!)
-      var requestDict = BuildResponsesRequest(opts.Model, effectivePrompt, pngImages, opts.Verbosity, validatedEffort, resolvedTemperature);
+      var requestDict = BuildResponsesRequest(
+        opts.Model,
+        effectivePrompt,
+        pngImages,
+        opts.Verbosity,
+        validatedEffort,
+        resolvedTemperature
+      );
 
       // === Send request ===
       var (responseText, usage, statusCode, rawResponse, requestBody) = await PostLlmAsync(requestDict);
@@ -187,8 +196,8 @@ class Program
   // Helpers to detect model families or exact support
   private static bool IsGpt5Family(string model)
   {
-    return model.Equals(Gpt5Model, StringComparison.OrdinalIgnoreCase)
-        || model.Equals(Gpt51Model, StringComparison.OrdinalIgnoreCase);
+    // "5 family" = any 5.x, in case you need a broad check later
+    return IsGpt5(model) || IsGpt51(model) || IsGpt52(model);
   }
 
   private static bool IsGpt51(string model)
@@ -201,17 +210,32 @@ class Program
     return model.Equals(Gpt5Model, StringComparison.OrdinalIgnoreCase);
   }
 
+  private static bool IsGpt52(string model)
+  {
+    return model.Equals(Gpt52Model, StringComparison.OrdinalIgnoreCase);
+  }
+
   // Define reasoning effort support per model
   // Policy:
   // - GPT-5: supports minimal|low|medium|high (NOT none)
   // - GPT-5.1: supports none|low|medium|high (NOT minimal)
+  // - GPT-5.2: supports none|low|medium|high|xhigh (NOT minimal)
   // - 4.1 family: supports minimal|low|medium|high (NOT none)
   private static string? ValidateAndNormalizeReasoningEffort(string? requestedEffort, string model)
   {
     if (string.IsNullOrWhiteSpace(requestedEffort)) return null;
     var effort = requestedEffort.Trim().ToLowerInvariant();
 
-    if (IsGpt51(model))
+    if (IsGpt52(model))
+    {
+      // GPT-5.2: none|low|medium|high|xhigh
+      if (effort is "none" or "low" or "medium" or "high" or "xhigh")
+        return effort;
+
+      if (effort == "minimal")
+        throw new ArgumentException("Invalid -e for GPT-5.2: 'minimal' is not supported; use 'none', 'low', 'medium', 'high', or 'xhigh'.");
+    }
+    else if (IsGpt51(model))
     {
       // GPT-5.1: none|low|medium|high
       if (effort is "none" or "low" or "medium" or "high")
@@ -290,9 +314,10 @@ class Program
         case "-e":
           if (i + 1 >= args.Length) throw new ArgumentException("Missing value for -e.");
           var e = args[++i].ToLowerInvariant();
-          var allowedE = new HashSet<string> { "none", "minimal", "low", "medium", "high" };
+          // CLI-level allowed set — model-specific filtering happens later
+          var allowedE = new HashSet<string> { "none", "minimal", "low", "medium", "high", "xhigh" };
           if (!allowedE.Contains(e))
-            throw new ArgumentException("Invalid -e; allowed: none | minimal | low | medium | high.");
+            throw new ArgumentException("Invalid -e; allowed: none | minimal | low | medium | high | xhigh.");
           reasoningEffort = e;
           break;
         case "--audio":
