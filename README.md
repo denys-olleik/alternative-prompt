@@ -1,3 +1,4 @@
+Documentation
 Sends the content of `prompt.md` as request and appends the response to the end of the file with delimeter and model used.
 
 ## How to use
@@ -5,19 +6,34 @@ Sends the content of `prompt.md` as request and appends the response to the end 
 1. Compose your prompt in `prompt.md`.
 2. Run the `.exe` in the same folder.
 
-All options
-- -r: use reasoning model (gpt-5-2025-08-07). Ignores -m. Temperature ignored.
-- -m: use mini model (gpt-4.1-mini-2025-04-14).
-- --images: attach all PNGs from ./images as image_url parts; on success, moves them to ./image-archive.
-- -t <float>: temperature (non-reasoning models only). Default 0.1.
-- -v <low|medium|high>: verbosity (reasoning models only).
-- -e <minimal|low|medium|high>: reasoning_effort (reasoning models only).
-- --audio [text]: also generate TTS WAV via gpt-4o-mini-tts.
+## CLI (current code)
 
-Common combinations:
-* mini: `.\Prompt.exe -m`
-* reasoning: `.\Prompt.exe -r -v high -e minimal`
-* with audio: `.\Prompt.exe -r -v high -e minimal --audio`
-* with images: `.\Prompt.exe -r -v high -e minimal --images`
+First argument must be the model name, then optional flags.
 
-NOTE: GPT5 removes temperature and adds verbosity and reasoning flags.
+Examples:
+- `.\Prompt.exe gpt-4.1-mini-2025-04-14`
+- `.\Prompt.exe gpt-5.2-2025-12-11 -e xhigh`
+- `.\Prompt.exe gpt-5.1-2025-11-13 -v high -e none --images --archive --audio`
+
+All options:
+- `<model>`: required first argument. Supported:
+  - `gpt-4.1-2025-04-14`
+  - `gpt-4.1-mini-2025-04-14`
+  - `gpt-5-2025-08-07`
+  - `gpt-5.1-2025-11-13`
+  - `gpt-5.2-2025-12-11`
+  - `gpt-4o-mini-tts` (not intended for chat requests)
+- `--images`: attach all PNGs from `./images` as `input_image` parts; on success, moves them to `./image-archive`.
+- `--archive`: archive the full conversation to `./archive/promptN.md` and reset `prompt.md` to only the last response block.
+- `-t <float>`: temperature. If omitted for GPT‑4.1 family, defaults to `0.1`. Otherwise omitted unless explicitly set.
+- `-v <low|medium|high>`: sets `text.verbosity` (passed to `/v1/responses`).
+- `-e <none|minimal|low|medium|high|xhigh>`: reasoning effort (validated per-model):
+  - GPT‑5 (`gpt-5-2025-08-07`): `minimal|low|medium|high`
+  - GPT‑5.1 (`gpt-5.1-2025-11-13`): `none|low|medium|high`
+  - GPT‑5.2 (`gpt-5.2-2025-12-11`): `none|low|medium|high|xhigh`
+  - GPT‑4.1 family: `minimal|low|medium|high`
+- `--audio [text]`: also generate TTS WAV via `/v1/audio/speech` using `gpt-4o-mini-tts`, writing `output.wav` (and archiving any existing `output.wav` to `./audio-archive/outputN.wav`). If `[text]` is omitted, uses the model response text.
+
+Notes:
+- Chat requests use `https://api.openai.com/v1/responses`.
+- TTS requests use `https://api.openai.com/v1/audio/speech`.
