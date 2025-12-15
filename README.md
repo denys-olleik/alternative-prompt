@@ -1,19 +1,19 @@
 ## Documentation
-Sends the content of `prompt.md` as request and appends the response to the end of the file with delimeter and model used.
+Sends the content of `prompt.md` as a request and appends the response to the end of the file with delimiter and model used.
 
 ## How to use
 
 1. Compose your prompt in `prompt.md`.
-2. Run the `.exe` in the same folder.
+2. Run the executable in the same folder (the app reads `prompt.md` from the current working directory).
 
 ## CLI (current code)
 
 First argument must be the model name, then optional flags.
 
 Examples:
-- `.\Prompt.exe gpt-4.1-mini-2025-04-14`
-- `.\Prompt.exe gpt-5.2-2025-12-11 -e xhigh`
-- `.\Prompt.exe gpt-5.1-2025-11-13 -v high -e none --images --archive --audio`
+- `llm.exe gpt-4.1-mini-2025-04-14`
+- `llm.exe gpt-5.2-2025-12-11 -e xhigh`
+- `llm.exe gpt-5.1-2025-11-13 -v high -e none --images --archive --audio`
 
 All options:
 - `<model>`: required first argument. Supported:
@@ -37,3 +37,7 @@ All options:
 Notes:
 - Chat requests use `https://api.openai.com/v1/responses`.
 - TTS requests use `https://api.openai.com/v1/audio/speech`.
+- API key must be present in environment variable `openai`.
+
+Requirements:
+- API key must be set in environment variable `openai` (the app reads `Environment.GetEnvironmentVariable("openai")`).
